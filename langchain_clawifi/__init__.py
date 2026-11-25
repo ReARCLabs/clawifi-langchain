@@ -2,6 +2,7 @@
 
 from importlib import metadata
 
+from langchain_clawifi._keyless import ClawifiKeylessError
 from langchain_clawifi.tools import (
     ClawifiFetch,
     ClawifiFetchInput,
@@ -16,6 +17,7 @@ except metadata.PackageNotFoundError:  # pragma: no cover
 
 __all__ = [
     "ClawifiFetch",
+    "ClawifiKeylessError",
     "ClawifiFetchInput",
     "ClawifiSearch",
     "ClawifiSearchInput",

@@ -13,6 +13,17 @@ from langchain_core.tools import BaseTool, ToolException
 from langchain_core.utils import secret_from_env
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, SecretStr
 
+from langchain_clawifi._keyless import (
+    KEYLESS_FETCH_TOOL,
+    KEYLESS_MAX_RESULTS,
+    KEYLESS_SEARCH_TOOL,
+    AsyncKeylessClient,
+    KeylessClient,
+    fetch_arguments,
+    keyless_note,
+    search_arguments,
+)
+
 DEFAULT_MAX_CHARS = 20_000
 
 _RESULT_FIELDS = ("rank", "title", "url", "snippet", "published_at")
@@ -21,8 +32,9 @@ _RESULT_FIELDS = ("rank", "title", "url", "snippet", "published_at")
 class _ClawifiToolBase(BaseTool):
     """Shared client handling for the Clawifi tools.
 
-    The API key is read from ``CLAWIFI_API_KEY`` when it is not passed. Without
-    a key, the calls go out keyless and use Clawifi's free trial limits.
+    With an API key (``api_key`` or ``CLAWIFI_API_KEY``) the tools call the Clawifi
+    REST API through the official SDK. Without a key they call the keyless trial
+    tools of Clawifi's hosted MCP server, which has lower limits.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, populate_by_name=True)
@@ -31,22 +43,32 @@ class _ClawifiToolBase(BaseTool):
         default_factory=secret_from_env("CLAWIFI_API_KEY", default=None),
         alias="api_key",
     )
-    """Clawifi API key. Optional: keyless calls use the free trial limits."""
+    """Clawifi API key. Optional: without it the keyless trial is used."""
 
     api_base: str | None = None
     """Override the API base URL. Defaults to the SDK default or ``CLAWIFI_API_BASE``."""
 
     client: Clawifi | None = Field(default=None, exclude=True)
-    """Optional pre-built sync client."""
+    """Optional pre-built sync client (always used when set)."""
 
     async_client: AsyncClawifi | None = Field(default=None, exclude=True)
-    """Optional pre-built async client."""
+    """Optional pre-built async client (always used when set)."""
+
+    keyless_client: KeylessClient | None = Field(default=None, exclude=True)
+    """Optional pre-built keyless MCP client, used only when there is no key."""
+
+    async_keyless_client: AsyncKeylessClient | None = Field(default=None, exclude=True)
+    """Optional pre-built async keyless MCP client, used only when there is no key."""
 
     _sync: Clawifi | None = PrivateAttr(default=None)
     _async: AsyncClawifi | None = PrivateAttr(default=None)
 
     def _key(self) -> str | None:
         return self.clawifi_api_key.get_secret_value() if self.clawifi_api_key else None
+
+    def _keyless(self, *, is_async: bool) -> bool:
+        prebuilt = self.async_client if is_async else self.client
+        return prebuilt is None and self._key() is None
 
     def _get_client(self) -> Clawifi:
         if self.client is not None:
@@ -61,6 +83,16 @@ class _ClawifiToolBase(BaseTool):
         if self._async is None:
             self._async = AsyncClawifi(api_key=self._key(), api_base=self.api_base)
         return self._async
+
+    def _get_keyless_client(self) -> KeylessClient:
+        if self.keyless_client is None:
+            self.keyless_client = KeylessClient(api_base=self.api_base)
+        return self.keyless_client
+
+    def _get_async_keyless_client(self) -> AsyncKeylessClient:
+        if self.async_keyless_client is None:
+            self.async_keyless_client = AsyncKeylessClient(api_base=self.api_base)
+        return self.async_keyless_client
 
 
 class ClawifiSearchInput(BaseModel):
@@ -82,7 +114,12 @@ class ClawifiSearchInput(BaseModel):
 
 
 class ClawifiSearch(_ClawifiToolBase):
-    """Search the web with Clawifi free search (``POST /search/free``).
+    """Search the web with Clawifi free search.
+
+    With a key this calls ``POST /search/free`` and returns a list of results.
+    Without a key it calls the hosted MCP trial tool ``search_free`` and returns
+    ``{"results": [...], "keyless_note": "..."}``: at most 3 results, and the
+    domain and time filters are not applied.
 
     Setup:
         .. code-block:: bash
@@ -105,7 +142,7 @@ class ClawifiSearch(_ClawifiToolBase):
 
     name: str = "clawifi_search"
     description: str = (
-        "Search the web. Returns a list of results with title, url and snippet. "
+        "Search the web. Returns results with title, url and snippet. "
         "Use clawifi_fetch to read a result's page."
     )
     args_schema: type[BaseModel] = ClawifiSearchInput
@@ -126,14 +163,28 @@ class ClawifiSearch(_ClawifiToolBase):
         return body
 
     @staticmethod
-    def _format(response: dict[str, Any]) -> list[dict[str, Any]]:
+    def _items(response: dict[str, Any]) -> list[dict[str, Any]]:
         if not response.get("success", True) and not response.get("results"):
             errors = response.get("errors") or []
             raise ToolException(f"Clawifi search failed: {errors}")
         return [
             {k: item.get(k) for k in _RESULT_FIELDS if item.get(k) is not None}
             for item in response.get("results") or []
+            if isinstance(item, dict)
         ]
+
+    def _keyless_result(self, response: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        requested = body.get("max_results")
+        limit = min(requested or KEYLESS_MAX_RESULTS, KEYLESS_MAX_RESULTS)
+        dropped = [
+            name
+            for name in ("time_range", "include_domains", "exclude_domains", "country", "language")
+            if body.get(name)
+        ]
+        return {
+            "results": self._items(response)[:limit],
+            "keyless_note": keyless_note(dropped, requested),
+        }
 
     def _run(
         self,
@@ -143,7 +194,7 @@ class ClawifiSearch(_ClawifiToolBase):
         include_domains: list[str] | None = None,
         exclude_domains: list[str] | None = None,
         run_manager: CallbackManagerForToolRun | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, Any]] | dict[str, Any]:
         body = self._body(
             max_results,
             time_range=time_range,
@@ -151,10 +202,15 @@ class ClawifiSearch(_ClawifiToolBase):
             exclude_domains=exclude_domains,
         )
         try:
+            if self._keyless(is_async=False):
+                response = self._get_keyless_client().call_tool(
+                    KEYLESS_SEARCH_TOOL, search_arguments(query)
+                )
+                return self._keyless_result(response, body)
             response = self._get_client().search_free(query, **body)
         except ClawifiError as exc:
             raise ToolException(str(exc)) from exc
-        return self._format(response)
+        return self._items(response)
 
     async def _arun(
         self,
@@ -164,7 +220,7 @@ class ClawifiSearch(_ClawifiToolBase):
         include_domains: list[str] | None = None,
         exclude_domains: list[str] | None = None,
         run_manager: AsyncCallbackManagerForToolRun | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, Any]] | dict[str, Any]:
         body = self._body(
             max_results,
             time_range=time_range,
@@ -172,10 +228,15 @@ class ClawifiSearch(_ClawifiToolBase):
             exclude_domains=exclude_domains,
         )
         try:
+            if self._keyless(is_async=True):
+                response = await self._get_async_keyless_client().call_tool(
+                    KEYLESS_SEARCH_TOOL, search_arguments(query)
+                )
+                return self._keyless_result(response, body)
             response = await self._get_async_client().search_free(query, **body)
         except ClawifiError as exc:
             raise ToolException(str(exc)) from exc
-        return self._format(response)
+        return self._items(response)
 
 
 class ClawifiFetchInput(BaseModel):
@@ -192,7 +253,10 @@ class ClawifiFetchInput(BaseModel):
 
 
 class ClawifiFetch(_ClawifiToolBase):
-    """Read a web page or PDF as Markdown with Clawifi (``POST /fetch``).
+    """Read a web page or PDF as Markdown with Clawifi.
+
+    With a key this calls ``POST /fetch``. Without a key it calls the hosted MCP
+    trial tool ``fetch_url``; the result has the same fields.
 
     Instantiate:
         .. code-block:: python
@@ -218,7 +282,7 @@ class ClawifiFetch(_ClawifiToolBase):
     """Cut the returned Markdown to this many characters."""
 
     render: Literal["never", "auto", "always"] | None = None
-    """Browser rendering mode; ``None`` keeps the API default."""
+    """Browser rendering mode; ``None`` keeps the API default. Not sent without a key."""
 
     def _body(self, query: str | None) -> dict[str, Any]:
         body: dict[str, Any] = {}
@@ -253,7 +317,12 @@ class ClawifiFetch(_ClawifiToolBase):
         run_manager: CallbackManagerForToolRun | None = None,
     ) -> dict[str, Any]:
         try:
-            response = self._get_client().fetch(url, **self._body(query))
+            if self._keyless(is_async=False):
+                response = self._get_keyless_client().call_tool(
+                    KEYLESS_FETCH_TOOL, fetch_arguments(url, query)
+                )
+            else:
+                response = self._get_client().fetch(url, **self._body(query))
         except ClawifiError as exc:
             raise ToolException(str(exc)) from exc
         return self._format(response)
@@ -265,7 +334,12 @@ class ClawifiFetch(_ClawifiToolBase):
         run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> dict[str, Any]:
         try:
-            response = await self._get_async_client().fetch(url, **self._body(query))
+            if self._keyless(is_async=True):
+                response = await self._get_async_keyless_client().call_tool(
+                    KEYLESS_FETCH_TOOL, fetch_arguments(url, query)
+                )
+            else:
+                response = await self._get_async_client().fetch(url, **self._body(query))
         except ClawifiError as exc:
             raise ToolException(str(exc)) from exc
         return self._format(response)
