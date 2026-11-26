@@ -23,6 +23,7 @@ from langchain_clawifi._keyless import (
     KeylessClient,
     fetch_arguments,
     keyless_note,
+    require_copyable,
     search_arguments,
 )
 
@@ -76,7 +77,8 @@ class _ClawifiToolBase(BaseTool):
             return self.client
         if self._sync is None:
             if self.async_client is not None:
-                # Only an async client was given: reuse its key and base URL.
+                # Only an async client was given: mirror it if nothing would be lost.
+                require_copyable(self.async_client, "async_client", "client")
                 self._sync = Clawifi(config=self.async_client.config)
             else:
                 self._sync = Clawifi(api_key=self._key(), api_base=self.api_base)
@@ -94,7 +96,8 @@ class _ClawifiToolBase(BaseTool):
             yield self.async_client
             return
         if self.client is not None:
-            # Only a sync client was given: reuse its key and base URL.
+            # Only a sync client was given: mirror it if nothing would be lost.
+            require_copyable(self.client, "client", "async_client")
             client = AsyncClawifi(config=self.client.config)
         else:
             client = AsyncClawifi(api_key=self._key(), api_base=self.api_base)
@@ -102,6 +105,19 @@ class _ClawifiToolBase(BaseTool):
             yield client
         finally:
             await client.aclose()
+
+    def close(self) -> None:
+        """End the keyless MCP session (if any) and close the clients this tool built."""
+        if self.keyless_client is not None:
+            self.keyless_client.close()
+        if self._sync is not None:
+            self._sync.close()
+            self._sync = None
+
+    async def aclose(self) -> None:
+        """End the async keyless MCP session (if any). Call it from the loop that used it."""
+        if self.async_keyless_client is not None:
+            await self.async_keyless_client.aclose()
 
     def _get_keyless_client(self) -> KeylessClient:
         if self.keyless_client is None:

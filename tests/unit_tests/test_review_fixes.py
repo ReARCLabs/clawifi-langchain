@@ -19,55 +19,8 @@ from langchain_core.tools import ToolException
 import langchain_clawifi._keyless as keyless_module
 from langchain_clawifi import ClawifiFetch, ClawifiSearch
 from langchain_clawifi._keyless import KeylessClient, retry_after_seconds
-from tests.unit_tests.fake_mcp import FETCH_PAYLOAD, SEARCH_PAYLOAD, FakeMcpServer
-
-
-class Router:
-    """Sends /mcp to the fake MCP server and every other path to a REST recorder."""
-
-    def __init__(self, mcp: FakeMcpServer) -> None:
-        self.mcp = mcp
-        self.rest: list[httpx.Request] = []
-
-    def __call__(self, request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/mcp":
-            return self.mcp(request)
-        self.rest.append(request)
-        payload = SEARCH_PAYLOAD if request.url.path == "/search/free" else FETCH_PAYLOAD
-        return httpx.Response(200, json=payload)
-
-
-@pytest.fixture
-def router(monkeypatch: pytest.MonkeyPatch) -> Router:
-    """Route every httpx client the code builds itself to in-memory fakes.
-
-    The async client also behaves like a pooled transport: used from a second
-    event loop it fails with "Event loop is closed", as a real one does.
-    """
-    route = Router(FakeMcpServer())
-    real_async, real_sync = httpx.AsyncClient, httpx.Client
-
-    class LoopBoundAsyncClient(real_async):  # type: ignore[misc, valid-type]
-        def __init__(self, *args: Any, transport: Any = None, **kwargs: Any) -> None:
-            super().__init__(*args, transport=transport or httpx.MockTransport(route), **kwargs)
-            self.loop_seen: asyncio.AbstractEventLoop | None = None
-
-        async def send(self, request: httpx.Request, **kwargs: Any) -> httpx.Response:
-            loop = asyncio.get_running_loop()
-            if self.loop_seen is None:
-                self.loop_seen = loop
-            elif self.loop_seen is not loop:
-                raise RuntimeError("Event loop is closed")
-            return await super().send(request, **kwargs)
-
-    class RoutedClient(real_sync):  # type: ignore[misc, valid-type]
-        def __init__(self, *args: Any, transport: Any = None, **kwargs: Any) -> None:
-            super().__init__(*args, transport=transport or httpx.MockTransport(route), **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", LoopBoundAsyncClient)
-    monkeypatch.setattr(httpx, "Client", RoutedClient)
-    return route
-
+from tests.unit_tests.conftest import Router
+from tests.unit_tests.fake_mcp import FakeMcpServer
 
 # -- Finding 1: async clients must not stay bound to the first event loop ----------
 
@@ -202,7 +155,7 @@ def test_retry_after_seconds() -> None:
     now = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
     assert retry_after_seconds("7") == 7
     assert retry_after_seconds(" 2.5 ") == 2.5
-    assert retry_after_seconds("-3") == 0
+    assert retry_after_seconds("-3") is None
     assert (
         retry_after_seconds(format_datetime(now + timedelta(seconds=30), usegmt=True), now=now)
         == 30

@@ -81,7 +81,7 @@ agent.invoke({"messages": [{"role": "user", "content": "Summarize the latest MCP
 | --- | --- | --- | --- |
 | both | `api_key` | `CLAWIFI_API_KEY` | API key; optional |
 | both | `api_base` | SDK default | Override the API URL |
-| both | `client` / `async_client` | built on first call | Pass your own `clawifi.Clawifi` / `AsyncClawifi` |
+| both | `client` / `async_client` | built on first call | Pass your own `clawifi.Clawifi` / `AsyncClawifi`; see Clients and sessions |
 | `ClawifiSearch` | `max_results` | `5` | Results per call when the call does not set one |
 | `ClawifiSearch` | `country`, `language` | none | Passed to the search |
 | `ClawifiFetch` | `max_chars` | `20000` | Cut the returned Markdown to this length |
@@ -90,6 +90,12 @@ agent.invoke({"messages": [{"role": "user", "content": "Summarize the latest MCP
 Call arguments the model can set: `query`, `max_results`, `time_range` (`day`/`week`/`month`/`year`), `include_domains`, `exclude_domains` for search; `url`, `query` for fetch.
 
 API errors, including keyless trial limits, are raised as `ToolException`. Set `handle_tool_error=True` on a tool to return the error text to the model instead.
+
+### Clients and sessions
+
+- **Which path is used:** Any key, or any client you pass, selects the REST API. The keyless trial is used only when there is neither.
+- **Passing only one client:** If you pass only `client` (sync) or only `async_client`, the other mode is built from its key, base URL, timeout and retries. If the given client has a custom transport or a proxy, those cannot be copied. In that case the other mode raises `ClawifiClientConfigError`; pass both clients. Other HTTP settings, such as TLS verification and connection limits, are not copied either.
+- **Trial sessions:** The keyless trial opens one MCP session and reuses it. Async calls get one session per event loop, and a new loop ends the previous loop's session. Call `close()` (sync) or `await aclose()` (async, from the same loop) when you are done, to end the session on the server.
 
 ## Costs
 
