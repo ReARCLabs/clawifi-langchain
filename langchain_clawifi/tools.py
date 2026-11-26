@@ -76,7 +76,7 @@ class _ClawifiToolBase(BaseTool):
         if self.client is not None:
             return self.client
         if self._sync is None:
-            if self.async_client is not None:
+            if self.async_client is not None and self._key() is None:
                 raise missing_client_error("async_client", "client")
             self._sync = Clawifi(api_key=self._key(), api_base=self.api_base)
         return self._sync
@@ -92,7 +92,7 @@ class _ClawifiToolBase(BaseTool):
         if self.async_client is not None:
             yield self.async_client
             return
-        if self.client is not None:
+        if self.client is not None and self._key() is None:
             raise missing_client_error("client", "async_client")
         client = AsyncClawifi(api_key=self._key(), api_base=self.api_base)
         try:
@@ -101,7 +101,7 @@ class _ClawifiToolBase(BaseTool):
             await client.aclose()
 
     def close(self) -> None:
-        """End the keyless MCP session (if any) and close the clients this tool built."""
+        """Close the sync HTTP clients this tool built; the next call builds new ones."""
         if self.keyless_client is not None:
             self.keyless_client.close()
         if self._sync is not None:
@@ -109,7 +109,7 @@ class _ClawifiToolBase(BaseTool):
             self._sync = None
 
     async def aclose(self) -> None:
-        """End the async keyless MCP session (if any), from any event loop."""
+        """Kept for symmetry: async calls already close their own clients and sessions."""
         if self.async_keyless_client is not None:
             await self.async_keyless_client.aclose()
 

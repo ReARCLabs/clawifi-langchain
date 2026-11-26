@@ -2,58 +2,18 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import httpx
 import pytest
 from langchain_core.tools import ToolException
 
 from langchain_clawifi import ClawifiSearch
 from langchain_clawifi._keyless import (
-    AsyncKeylessClient,
     KeylessClient,
     retry_after_seconds,
 )
 from tests.unit_tests.fake_mcp import FakeMcpServer
 
-# Finding 2: one MCP session is reused and ended with DELETE ---------------------
-
-
-def test_async_calls_in_one_loop_share_one_session() -> None:
-    server = FakeMcpServer()
-    client = AsyncKeylessClient(transport=httpx.MockTransport(server))
-
-    async def run() -> None:
-        for _ in range(3):
-            await client.call_tool("search_free", {"query": "mcp"})
-        assert server.open_sessions() == 1
-        await client.aclose()
-
-    asyncio.run(run())
-    assert server.methods().count("initialize") == 1
-    assert server.methods().count("tools/call") == 3
-    assert server.deleted_sessions == ["sess-1-1"]
-    assert server.open_sessions() == 0
-
-
-def test_tool_aclose_and_close_end_sessions() -> None:
-    server = FakeMcpServer()
-    transport = httpx.MockTransport(server)
-    tool = ClawifiSearch(
-        keyless_client=KeylessClient(transport=transport),
-        async_keyless_client=AsyncKeylessClient(transport=transport),
-    )
-
-    async def run() -> None:
-        await tool.ainvoke({"query": "mcp"})
-        await tool.ainvoke({"query": "mcp"})
-        await tool.aclose()
-
-    asyncio.run(run())
-    tool.invoke({"query": "mcp"})
-    tool.close()
-    assert server.methods().count("initialize") == 2  # one async session, one sync session
-    assert server.open_sessions() == 0
+# A server that sends no session ID gets no DELETE ----------------------------
 
 
 def test_sync_close_without_session_sends_nothing() -> None:

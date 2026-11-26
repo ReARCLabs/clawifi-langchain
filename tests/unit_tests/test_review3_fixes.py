@@ -39,7 +39,7 @@ def test_error_type_is_a_clawifi_error() -> None:
         async with tool._async_rest():
             pass
 
-    with pytest.raises(ClawifiClientConfigError, match="or pass api_key instead of clients"):
+    with pytest.raises(ClawifiClientConfigError, match="or set an API key"):
         asyncio.run(open_async())
 
 
@@ -62,65 +62,7 @@ def test_mirroring_helpers_are_gone() -> None:
     assert not hasattr(keyless_module, "require_copyable")
 
 
-# 2. Async keyless: no per-loop state; the session ID is reused --------------------
-
-
-def test_two_asyncio_runs_reuse_the_same_session_id(router: Router) -> None:
-    client = AsyncKeylessClient()  # default transport, routed to the fake server
-    asyncio.run(client.call_tool("search_free", {"query": "a"}))
-    first_session = client.session_id
-    asyncio.run(client.call_tool("search_free", {"query": "b"}))
-    assert first_session == "sess-1-1" and client.session_id == first_session
-    assert router.mcp.methods().count("initialize") == 1
-    calls = [r for r, body in router.mcp.requests if body.get("method") == "tools/call"]
-    assert [r.headers["mcp-session-id"] for r in calls] == ["sess-1-1", "sess-1-1"]
-
-
-def test_unknown_session_reinitializes_once_across_loops(router: Router) -> None:
-    client = AsyncKeylessClient()
-    asyncio.run(client.call_tool("search_free", {"query": "a"}))
-    router.mcp.expire_session_once = True
-    asyncio.run(client.call_tool("search_free", {"query": "b"}))
-    assert router.mcp.methods().count("initialize") == 2
-    assert client.session_id == "sess-1-2"
-
-
-def test_async_aclose_deletes_from_any_loop() -> None:
-    server = FakeMcpServer()
-    client = AsyncKeylessClient(transport=httpx.MockTransport(server))
-    asyncio.run(client.call_tool("search_free", {"query": "a"}))
-    asyncio.run(client.aclose())
-    assert server.deleted_sessions == ["sess-1-1"] and client.session_id is None
-    asyncio.run(client.aclose())  # nothing left to end: no second DELETE
-    assert server.deleted_sessions == ["sess-1-1"]
-
-
-def test_async_aclose_ignores_delete_errors() -> None:
-    server = FakeMcpServer()
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.method == "DELETE":
-            raise httpx.ConnectError("gone")
-        return server(request)
-
-    client = AsyncKeylessClient(transport=httpx.MockTransport(handler))
-    asyncio.run(client.call_tool("search_free", {"query": "a"}))
-    asyncio.run(client.aclose())  # does not raise
-    assert client.session_id is None
-
-
-# 3. Sync keyless: close() drops the HTTP client; the next call builds a new one --
-
-
-def test_sync_call_after_close_works() -> None:
-    server = FakeMcpServer()
-    client = KeylessClient(transport=httpx.MockTransport(server))
-    client.call_tool("search_free", {"query": "a"})
-    client.close()
-    assert server.deleted_sessions == ["sess-1-1"]
-    out = client.call_tool("search_free", {"query": "b"})
-    assert out["success"] is True
-    assert client.session_id == "sess-1-2"
+# 3. Sync keyless: close() drops the HTTP client; the next call builds a new one
 
 
 def test_tool_close_then_invoke_works() -> None:
@@ -192,10 +134,3 @@ def test_transport_failures_are_wrapped(error: Exception) -> None:
     tool = ClawifiSearch(keyless_client=KeylessClient(transport=httpx.MockTransport(broken)))
     with pytest.raises(ToolException, match="unreachable"):
         tool.invoke({"query": "a"})
-
-
-def test_closed_http_client_error_is_wrapped() -> None:
-    client = KeylessClient(transport=httpx.MockTransport(FakeMcpServer()))
-    client._client().close()  # someone closed the underlying httpx client
-    with pytest.raises(ClawifiKeylessError, match="closed"):
-        client.call_tool("search_free", {"query": "a"})

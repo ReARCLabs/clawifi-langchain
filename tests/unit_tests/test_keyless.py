@@ -40,7 +40,7 @@ def test_search_keyless_handshake_and_cap() -> None:
     assert "Asked for" not in out["keyless_note"]
 
 
-def test_search_keyless_reports_dropped_filters_and_reuses_session() -> None:
+def test_search_keyless_reports_dropped_filters_and_opens_a_session_per_call() -> None:
     server = FakeMcpServer()
     tool = ClawifiSearch(**keyless_pair(server))
     out = tool.invoke(
@@ -57,7 +57,9 @@ def test_search_keyless_reports_dropped_filters_and_reuses_session() -> None:
     assert "capped" not in out["keyless_note"]
     assert server.calls()[0]["arguments"] == {"query": "mcp"}  # filters are never sent
     tool.invoke({"query": "again"})
-    assert server.methods().count("initialize") == 1
+    # Every call opens and ends its own session.
+    assert server.methods().count("initialize") == 2
+    assert server.open_sessions() == 0
 
 
 def test_fetch_keyless_same_fields_as_keyed() -> None:
