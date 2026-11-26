@@ -63,12 +63,12 @@ def _tool_with(server: FakeMcpServer) -> ClawifiSearch:
             "could not be read",
         ),
         (
-            httpx.Response(200, json={"jsonrpc": "2.0", "id": 2, "error": "Unknown tool"}),
+            httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "error": "Unknown tool"}),
             "Unknown tool",
         ),
         (
             httpx.Response(
-                200, json={"jsonrpc": "2.0", "id": 2, "result": ["not", "an", "object"]}
+                200, json={"jsonrpc": "2.0", "id": 1, "result": ["not", "an", "object"]}
             ),
             "not an object",
         ),

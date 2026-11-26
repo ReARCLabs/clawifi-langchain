@@ -28,9 +28,9 @@ def test_search_keyless_handshake_and_cap() -> None:
 
     out = tool.invoke({"query": "mcp"})
 
-    assert server.methods() == ["initialize", "notifications/initialized", "tools/call"]
-    init = server.requests[0][1]["params"]
-    assert init["protocolVersion"] == "2025-06-18" and init["clientInfo"]["name"]
+    # Round 5: the hosted server is stateless, so a call is a single tools/call POST.
+    assert server.methods() == ["tools/call"]
+    assert server.requests[0][0].headers["mcp-protocol-version"] == "2025-06-18"
     assert server.calls() == [{"name": "search_free", "arguments": {"query": "mcp"}}]
     assert [r["rank"] for r in out["results"]] == [1, 2, 3]
     assert set(out) == {"results", "keyless_note"}
@@ -40,7 +40,7 @@ def test_search_keyless_handshake_and_cap() -> None:
     assert "Asked for" not in out["keyless_note"]
 
 
-def test_search_keyless_reports_dropped_filters_and_opens_a_session_per_call() -> None:
+def test_search_keyless_reports_dropped_filters_one_post_per_call() -> None:
     server = FakeMcpServer()
     tool = ClawifiSearch(**keyless_pair(server))
     out = tool.invoke(
@@ -57,9 +57,7 @@ def test_search_keyless_reports_dropped_filters_and_opens_a_session_per_call() -
     assert "capped" not in out["keyless_note"]
     assert server.calls()[0]["arguments"] == {"query": "mcp"}  # filters are never sent
     tool.invoke({"query": "again"})
-    # Every call opens and ends its own session.
-    assert server.methods().count("initialize") == 2
-    assert server.open_sessions() == 0
+    assert server.methods() == ["tools/call", "tools/call"]  # one POST per call
 
 
 def test_fetch_keyless_same_fields_as_keyed() -> None:
@@ -89,21 +87,6 @@ def test_structured_content_is_used() -> None:
     server = FakeMcpServer(structured=True)
     out = ClawifiFetch(**keyless_pair(server)).invoke({"url": "https://example.com"})
     assert out["title"] == "Example Domain"
-
-
-def test_server_without_session_header() -> None:
-    server = FakeMcpServer(session_id=None)
-    out = ClawifiFetch(**keyless_pair(server)).invoke({"url": "https://example.com"})
-    assert out["content"] == "Body"
-    assert all("mcp-session-id" not in r.headers for r, _ in server.requests)
-
-
-def test_expired_session_is_reopened_once() -> None:
-    server = FakeMcpServer()
-    server.expire_session_once = True
-    out = ClawifiFetch(**keyless_pair(server)).invoke({"url": "https://example.com"})
-    assert out["content"] == "Body"
-    assert server.methods().count("initialize") == 2
 
 
 def test_rate_limit_429_carries_retry_after() -> None:

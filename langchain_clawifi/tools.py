@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Literal
@@ -24,6 +25,7 @@ from langchain_clawifi._keyless import (
     fetch_arguments,
     keyless_note,
     missing_client_error,
+    resolve_key,
     search_arguments,
 )
 
@@ -64,9 +66,18 @@ class _ClawifiToolBase(BaseTool):
     """Optional pre-built async keyless MCP client, used only when there is no key."""
 
     _sync: Clawifi | None = PrivateAttr(default=None)
+    _lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
 
     def _key(self) -> str | None:
-        return self.clawifi_api_key.get_secret_value() if self.clawifi_api_key else None
+        """The API key, or None. A key of only whitespace counts as no key."""
+        explicit = self.clawifi_api_key.get_secret_value() if self.clawifi_api_key else None
+        return resolve_key(explicit)
+
+    def _base_from(self, given: Clawifi | AsyncClawifi | None) -> str | None:
+        """API base for a client built with the key: the tool's, else the given client's."""
+        if self.api_base:
+            return self.api_base
+        return given.config.api_base if given is not None else None
 
     def _keyless(self) -> bool:
         """Use the keyless trial only with no key and no pre-built REST client at all."""
@@ -75,11 +86,14 @@ class _ClawifiToolBase(BaseTool):
     def _get_client(self) -> Clawifi:
         if self.client is not None:
             return self.client
-        if self._sync is None:
-            if self.async_client is not None and self._key() is None:
-                raise missing_client_error("async_client", "client")
-            self._sync = Clawifi(api_key=self._key(), api_base=self.api_base)
-        return self._sync
+        with self._lock:
+            if self._sync is None:
+                if self.async_client is not None and self._key() is None:
+                    raise missing_client_error("async_client", "client")
+                self._sync = Clawifi(
+                    api_key=self._key(), api_base=self._base_from(self.async_client)
+                )
+            return self._sync
 
     @asynccontextmanager
     async def _async_rest(self) -> AsyncIterator[AsyncClawifi]:
@@ -94,7 +108,7 @@ class _ClawifiToolBase(BaseTool):
             return
         if self.client is not None and self._key() is None:
             raise missing_client_error("client", "async_client")
-        client = AsyncClawifi(api_key=self._key(), api_base=self.api_base)
+        client = AsyncClawifi(api_key=self._key(), api_base=self._base_from(self.client))
         try:
             yield client
         finally:
@@ -104,9 +118,10 @@ class _ClawifiToolBase(BaseTool):
         """Close the sync HTTP clients this tool built; the next call builds new ones."""
         if self.keyless_client is not None:
             self.keyless_client.close()
-        if self._sync is not None:
-            self._sync.close()
-            self._sync = None
+        with self._lock:
+            sync, self._sync = self._sync, None
+        if sync is not None:
+            sync.close()
 
     async def aclose(self) -> None:
         """Kept for symmetry: async calls already close their own clients and sessions."""
@@ -114,14 +129,16 @@ class _ClawifiToolBase(BaseTool):
             await self.async_keyless_client.aclose()
 
     def _get_keyless_client(self) -> KeylessClient:
-        if self.keyless_client is None:
-            self.keyless_client = KeylessClient(api_base=self.api_base)
-        return self.keyless_client
+        with self._lock:
+            if self.keyless_client is None:
+                self.keyless_client = KeylessClient(api_base=self.api_base)
+            return self.keyless_client
 
     def _get_async_keyless_client(self) -> AsyncKeylessClient:
-        if self.async_keyless_client is None:
-            self.async_keyless_client = AsyncKeylessClient(api_base=self.api_base)
-        return self.async_keyless_client
+        with self._lock:
+            if self.async_keyless_client is None:
+                self.async_keyless_client = AsyncKeylessClient(api_base=self.api_base)
+            return self.async_keyless_client
 
 
 class ClawifiSearchInput(BaseModel):
