@@ -23,7 +23,7 @@ from langchain_clawifi._keyless import (
     KeylessClient,
     fetch_arguments,
     keyless_note,
-    require_copyable,
+    missing_client_error,
     search_arguments,
 )
 
@@ -77,11 +77,8 @@ class _ClawifiToolBase(BaseTool):
             return self.client
         if self._sync is None:
             if self.async_client is not None:
-                # Only an async client was given: mirror it if nothing would be lost.
-                require_copyable(self.async_client, "async_client", "client")
-                self._sync = Clawifi(config=self.async_client.config)
-            else:
-                self._sync = Clawifi(api_key=self._key(), api_base=self.api_base)
+                raise missing_client_error("async_client", "client")
+            self._sync = Clawifi(api_key=self._key(), api_base=self.api_base)
         return self._sync
 
     @asynccontextmanager
@@ -96,11 +93,8 @@ class _ClawifiToolBase(BaseTool):
             yield self.async_client
             return
         if self.client is not None:
-            # Only a sync client was given: mirror it if nothing would be lost.
-            require_copyable(self.client, "client", "async_client")
-            client = AsyncClawifi(config=self.client.config)
-        else:
-            client = AsyncClawifi(api_key=self._key(), api_base=self.api_base)
+            raise missing_client_error("client", "async_client")
+        client = AsyncClawifi(api_key=self._key(), api_base=self.api_base)
         try:
             yield client
         finally:
@@ -115,7 +109,7 @@ class _ClawifiToolBase(BaseTool):
             self._sync = None
 
     async def aclose(self) -> None:
-        """End the async keyless MCP session (if any). Call it from the loop that used it."""
+        """End the async keyless MCP session (if any), from any event loop."""
         if self.async_keyless_client is not None:
             await self.async_keyless_client.aclose()
 

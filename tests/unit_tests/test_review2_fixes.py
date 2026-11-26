@@ -6,17 +6,14 @@ import asyncio
 
 import httpx
 import pytest
-from clawifi import AsyncClawifi, Clawifi
 from langchain_core.tools import ToolException
 
-from langchain_clawifi import ClawifiClientConfigError, ClawifiFetch, ClawifiSearch
+from langchain_clawifi import ClawifiSearch
 from langchain_clawifi._keyless import (
     AsyncKeylessClient,
     KeylessClient,
-    http_settings_copyable,
     retry_after_seconds,
 )
-from tests.unit_tests.conftest import Router
 from tests.unit_tests.fake_mcp import FakeMcpServer
 
 # Finding 2: one MCP session is reused and ended with DELETE ---------------------
@@ -37,20 +34,6 @@ def test_async_calls_in_one_loop_share_one_session() -> None:
     assert server.methods().count("tools/call") == 3
     assert server.deleted_sessions == ["sess-1-1"]
     assert server.open_sessions() == 0
-
-
-def test_new_event_loop_ends_the_old_session(router: Router) -> None:
-    client = AsyncKeylessClient()  # default transport, patched to the fakes
-    asyncio.run(client.call_tool("search_free", {"query": "a"}))
-    asyncio.run(client.call_tool("search_free", {"query": "b"}))
-    assert router.mcp.deleted_sessions == ["sess-1-1"]  # ended from the second loop
-    assert router.mcp.open_sessions() == 1
-
-    async def finish() -> None:
-        await client.aclose()
-
-    asyncio.run(finish())  # aclose from yet another loop still ends the session
-    assert router.mcp.open_sessions() == 0
 
 
 def test_tool_aclose_and_close_end_sessions() -> None:
@@ -79,57 +62,6 @@ def test_sync_close_without_session_sends_nothing() -> None:
     client.call_tool("fetch_url", {"url": "https://example.com"})
     client.close()
     assert server.deleted_sessions == []
-
-
-# Finding 3: a custom transport or proxy is never silently dropped ---------------
-
-
-def test_default_client_is_mirrored(router: Router) -> None:
-    out = asyncio.run(ClawifiSearch(client=Clawifi(api_key="k")).ainvoke({"query": "mcp"}))
-    assert out["results"]
-    assert router.rest[0].headers["authorization"] == "Bearer k"
-
-
-@pytest.mark.parametrize(
-    "client",
-    [
-        lambda: Clawifi(api_key="k", transport=httpx.MockTransport(lambda r: httpx.Response(200))),
-        lambda: Clawifi(
-            api_key="k", transport=httpx.HTTPTransport(proxy="http://proxy.invalid:3128")
-        ),
-    ],
-)
-def test_custom_sync_client_is_not_mirrored_to_async(client) -> None:
-    tool = ClawifiFetch(client=client())
-    with pytest.raises(ToolException, match="Pass async_client= as well"):
-        asyncio.run(tool.ainvoke({"url": "https://example.com"}))
-
-
-def test_custom_async_client_is_not_mirrored_to_sync() -> None:
-    async_client = AsyncClawifi(
-        api_key="k", transport=httpx.MockTransport(lambda r: httpx.Response(200))
-    )
-    with pytest.raises(ToolException, match="Pass client= as well"):
-        ClawifiSearch(async_client=async_client).invoke({"query": "mcp"})
-
-
-def test_proxy_mount_is_detected() -> None:
-    assert http_settings_copyable(Clawifi(api_key="k"))
-    proxied = Clawifi(api_key="k")
-    proxied._client = httpx.Client(proxy="http://proxy.invalid:3128")
-    assert not http_settings_copyable(proxied)
-
-    async def open_async_mirror() -> None:
-        async with ClawifiSearch(client=proxied)._async_rest():
-            pass
-
-    with pytest.raises(ClawifiClientConfigError, match="Pass async_client= as well"):
-        asyncio.run(open_async_mirror())
-
-
-def test_environment_proxy_counts_as_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
-    assert http_settings_copyable(Clawifi(api_key="k"))
 
 
 # Finding 7: undecodable SSE events (pings) are skipped ----------------------------

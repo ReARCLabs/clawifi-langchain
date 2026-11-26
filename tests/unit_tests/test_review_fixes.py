@@ -95,23 +95,6 @@ def test_unreadable_reply_is_a_keyless_error() -> None:
 # -- Finding 3: any pre-built REST client means REST, on both sync and async paths --
 
 
-def test_sync_client_only_then_async_call_uses_rest(router: Router) -> None:
-    sync_client = Clawifi(api_key="sync-key")
-    out = asyncio.run(ClawifiSearch(client=sync_client).ainvoke({"query": "mcp"}))
-    assert "keyless_note" not in out
-    assert router.mcp.requests == []
-    assert router.rest[0].url.path == "/search/free"
-    assert router.rest[0].headers["authorization"] == "Bearer sync-key"
-
-
-def test_async_client_only_then_sync_call_uses_rest(router: Router) -> None:
-    async_client = AsyncClawifi(api_key="async-key")
-    out = ClawifiFetch(async_client=async_client).invoke({"url": "https://example.com"})
-    assert out["content"] == "Body"
-    assert router.mcp.requests == []
-    assert router.rest[0].headers["authorization"] == "Bearer async-key"
-
-
 def test_keyless_only_without_key_and_without_clients() -> None:
     assert ClawifiSearch()._keyless() is True
     assert ClawifiSearch(client=Clawifi())._keyless() is False
