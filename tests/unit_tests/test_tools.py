@@ -88,8 +88,14 @@ def test_search_sends_query_and_formats_results() -> None:
     assert rec.requests[0].method == "POST"
     assert rec.last_body == {"query": "mcp", "max_results": 3, "time_range": "week"}
     assert rec.requests[0].headers["Authorization"] == "Bearer test-key"
-    assert out[0] == {"rank": 1, "title": "A", "url": "https://example.com/a", "snippet": "first"}
-    assert len(out) == 2
+    assert set(out) == {"results"}  # no keyless_note with a key
+    assert out["results"][0] == {
+        "rank": 1,
+        "title": "A",
+        "url": "https://example.com/a",
+        "snippet": "first",
+    }
+    assert len(out["results"]) == 2
 
 
 def test_search_keyless_sends_no_authorization_header() -> None:
@@ -128,7 +134,8 @@ async def test_search_async() -> None:
     tool = ClawifiSearch(async_client=async_client(rec))
     out = await tool.ainvoke({"query": "mcp", "include_domains": ["example.com"]})
     assert rec.last_body["include_domains"] == ["example.com"]
-    assert out[1]["url"] == "https://example.com/b"
+    assert set(out) == {"results"}
+    assert out["results"][1]["url"] == "https://example.com/b"
 
 
 def test_fetch_returns_markdown_and_passes_query() -> None:

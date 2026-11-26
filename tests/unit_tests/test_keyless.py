@@ -33,6 +33,7 @@ def test_search_keyless_handshake_and_cap() -> None:
     assert init["protocolVersion"] == "2025-06-18" and init["clientInfo"]["name"]
     assert server.calls() == [{"name": "search_free", "arguments": {"query": "mcp"}}]
     assert [r["rank"] for r in out["results"]] == [1, 2, 3]
+    assert set(out) == {"results", "keyless_note"}
     assert set(out["results"][0]) == {"rank", "title", "url", "snippet"}
     assert "at most 3 results" in out["keyless_note"]
     assert "Asked for 5 results; capped at 3." in out["keyless_note"]  # tool default is 5

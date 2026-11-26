@@ -116,10 +116,10 @@ class ClawifiSearchInput(BaseModel):
 class ClawifiSearch(_ClawifiToolBase):
     """Search the web with Clawifi free search.
 
-    With a key this calls ``POST /search/free`` and returns a list of results.
-    Without a key it calls the hosted MCP trial tool ``search_free`` and returns
-    ``{"results": [...], "keyless_note": "..."}``: at most 3 results, and the
-    domain and time filters are not applied.
+    Always returns ``{"results": [...]}``. With a key this calls
+    ``POST /search/free``. Without a key it calls the hosted MCP trial tool
+    ``search_free`` and adds ``keyless_note``: at most 3 results, and the domain
+    and time filters are not applied.
 
     Setup:
         .. code-block:: bash
@@ -194,7 +194,7 @@ class ClawifiSearch(_ClawifiToolBase):
         include_domains: list[str] | None = None,
         exclude_domains: list[str] | None = None,
         run_manager: CallbackManagerForToolRun | None = None,
-    ) -> list[dict[str, Any]] | dict[str, Any]:
+    ) -> dict[str, Any]:
         body = self._body(
             max_results,
             time_range=time_range,
@@ -210,7 +210,7 @@ class ClawifiSearch(_ClawifiToolBase):
             response = self._get_client().search_free(query, **body)
         except ClawifiError as exc:
             raise ToolException(str(exc)) from exc
-        return self._items(response)
+        return {"results": self._items(response)}
 
     async def _arun(
         self,
@@ -220,7 +220,7 @@ class ClawifiSearch(_ClawifiToolBase):
         include_domains: list[str] | None = None,
         exclude_domains: list[str] | None = None,
         run_manager: AsyncCallbackManagerForToolRun | None = None,
-    ) -> list[dict[str, Any]] | dict[str, Any]:
+    ) -> dict[str, Any]:
         body = self._body(
             max_results,
             time_range=time_range,
@@ -236,7 +236,7 @@ class ClawifiSearch(_ClawifiToolBase):
             response = await self._get_async_client().search_free(query, **body)
         except ClawifiError as exc:
             raise ToolException(str(exc)) from exc
-        return self._items(response)
+        return {"results": self._items(response)}
 
 
 class ClawifiFetchInput(BaseModel):

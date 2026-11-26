@@ -36,7 +36,7 @@ The Clawifi REST API needs a key. Without one, the tools call the trial tools of
 
 A free account has 1,000 credits a month ([sign up](https://clawifi.dev/signup)). With a key, the tools use the REST API and your plan's limits.
 
-Without a key, `ClawifiSearch` returns a dict instead of a list. The result items have the same fields, and `keyless_note` says which limits applied:
+`ClawifiSearch` returns the same shape with or without a key. Without a key it adds one field, `keyless_note`, which says which limits applied:
 
 ```python
 {
@@ -53,11 +53,12 @@ Without a key, `ClawifiSearch` returns a dict instead of a list. The result item
 from langchain_clawifi import ClawifiFetch, ClawifiSearch
 
 search = ClawifiSearch(max_results=5)
-results = search.invoke({"query": "what is the Model Context Protocol"})
-# [{"rank": 1, "title": "...", "url": "https://...", "snippet": "..."}, ...]
+out = search.invoke({"query": "what is the Model Context Protocol"})
+# {"results": [{"rank": 1, "title": "...", "url": "https://...", "snippet": "..."}, ...]}
+# Without a key, out also has "keyless_note".
 
 fetch = ClawifiFetch(max_chars=8000)
-page = fetch.invoke({"url": results[0]["url"], "query": "who maintains it?"})
+page = fetch.invoke({"url": out["results"][0]["url"], "query": "who maintains it?"})
 # {"url": "...", "title": "...", "content_status": "ok", "content": "..."}
 ```
 
