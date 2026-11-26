@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Literal
@@ -17,6 +16,7 @@ from langchain_core.utils import secret_from_env
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, SecretStr
 
 from langchain_clawifi._keyless import (
+    CLIENT_LOCK,
     KEYLESS_FETCH_TOOL,
     KEYLESS_MAX_RESULTS,
     KEYLESS_SEARCH_TOOL,
@@ -66,7 +66,20 @@ class _ClawifiToolBase(BaseTool):
     """Optional pre-built async keyless MCP client, used only when there is no key."""
 
     _sync: Clawifi | None = PrivateAttr(default=None)
-    _lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
+    """A sync REST client the tool built itself. Copies and pickles leave it out."""
+
+    def __getstate__(self) -> dict[Any, Any]:
+        state = super().__getstate__()
+        private = state.get("__pydantic_private__")
+        if private and private.get("_sync") is not None:
+            state["__pydantic_private__"] = {**private, "_sync": None}
+        return state
+
+    def __deepcopy__(self, memo: dict[int, Any] | None = None) -> Any:
+        memo = {} if memo is None else memo
+        if self._sync is not None:
+            memo[id(self._sync)] = None  # the copy builds its own client when needed
+        return super().__deepcopy__(memo)
 
     def _key(self) -> str | None:
         """The API key, or None. A key of only whitespace counts as no key."""
@@ -86,7 +99,7 @@ class _ClawifiToolBase(BaseTool):
     def _get_client(self) -> Clawifi:
         if self.client is not None:
             return self.client
-        with self._lock:
+        with CLIENT_LOCK:
             if self._sync is None:
                 if self.async_client is not None and self._key() is None:
                     raise missing_client_error("async_client", "client")
@@ -118,7 +131,7 @@ class _ClawifiToolBase(BaseTool):
         """Close the sync HTTP clients this tool built; the next call builds new ones."""
         if self.keyless_client is not None:
             self.keyless_client.close()
-        with self._lock:
+        with CLIENT_LOCK:
             sync, self._sync = self._sync, None
         if sync is not None:
             sync.close()
@@ -129,13 +142,13 @@ class _ClawifiToolBase(BaseTool):
             await self.async_keyless_client.aclose()
 
     def _get_keyless_client(self) -> KeylessClient:
-        with self._lock:
+        with CLIENT_LOCK:
             if self.keyless_client is None:
                 self.keyless_client = KeylessClient(api_base=self.api_base)
             return self.keyless_client
 
     def _get_async_keyless_client(self) -> AsyncKeylessClient:
-        with self._lock:
+        with CLIENT_LOCK:
             if self.async_keyless_client is None:
                 self.async_keyless_client = AsyncKeylessClient(api_base=self.api_base)
             return self.async_keyless_client
