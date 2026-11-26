@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any, Literal
 
 from clawifi import AsyncClawifi, Clawifi, ClawifiError
@@ -61,28 +63,45 @@ class _ClawifiToolBase(BaseTool):
     """Optional pre-built async keyless MCP client, used only when there is no key."""
 
     _sync: Clawifi | None = PrivateAttr(default=None)
-    _async: AsyncClawifi | None = PrivateAttr(default=None)
 
     def _key(self) -> str | None:
         return self.clawifi_api_key.get_secret_value() if self.clawifi_api_key else None
 
-    def _keyless(self, *, is_async: bool) -> bool:
-        prebuilt = self.async_client if is_async else self.client
-        return prebuilt is None and self._key() is None
+    def _keyless(self) -> bool:
+        """Use the keyless trial only with no key and no pre-built REST client at all."""
+        return self.client is None and self.async_client is None and self._key() is None
 
     def _get_client(self) -> Clawifi:
         if self.client is not None:
             return self.client
         if self._sync is None:
-            self._sync = Clawifi(api_key=self._key(), api_base=self.api_base)
+            if self.async_client is not None:
+                # Only an async client was given: reuse its key and base URL.
+                self._sync = Clawifi(config=self.async_client.config)
+            else:
+                self._sync = Clawifi(api_key=self._key(), api_base=self.api_base)
         return self._sync
 
-    def _get_async_client(self) -> AsyncClawifi:
+    @asynccontextmanager
+    async def _async_rest(self) -> AsyncIterator[AsyncClawifi]:
+        """Yield an async REST client bound to the running event loop.
+
+        A client passed as ``async_client`` is used as is. Otherwise a new one is
+        opened for this call and closed after it, so nothing stays bound to an
+        event loop that ``asyncio.run`` has already closed.
+        """
         if self.async_client is not None:
-            return self.async_client
-        if self._async is None:
-            self._async = AsyncClawifi(api_key=self._key(), api_base=self.api_base)
-        return self._async
+            yield self.async_client
+            return
+        if self.client is not None:
+            # Only a sync client was given: reuse its key and base URL.
+            client = AsyncClawifi(config=self.client.config)
+        else:
+            client = AsyncClawifi(api_key=self._key(), api_base=self.api_base)
+        try:
+            yield client
+        finally:
+            await client.aclose()
 
     def _get_keyless_client(self) -> KeylessClient:
         if self.keyless_client is None:
@@ -173,8 +192,17 @@ class ClawifiSearch(_ClawifiToolBase):
             if isinstance(item, dict)
         ]
 
-    def _keyless_result(self, response: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
-        requested = body.get("max_results")
+    def _requested(self, max_results: int | None) -> int | None:
+        """The result count the user asked for: per call, or set on the tool; else None."""
+        if max_results is not None:
+            return max_results
+        if "max_results" in self.model_fields_set:
+            return self.max_results
+        return None
+
+    def _keyless_result(
+        self, response: dict[str, Any], body: dict[str, Any], requested: int | None
+    ) -> dict[str, Any]:
         limit = min(requested or KEYLESS_MAX_RESULTS, KEYLESS_MAX_RESULTS)
         dropped = [
             name
@@ -202,11 +230,11 @@ class ClawifiSearch(_ClawifiToolBase):
             exclude_domains=exclude_domains,
         )
         try:
-            if self._keyless(is_async=False):
+            if self._keyless():
                 response = self._get_keyless_client().call_tool(
                     KEYLESS_SEARCH_TOOL, search_arguments(query)
                 )
-                return self._keyless_result(response, body)
+                return self._keyless_result(response, body, self._requested(max_results))
             response = self._get_client().search_free(query, **body)
         except ClawifiError as exc:
             raise ToolException(str(exc)) from exc
@@ -228,12 +256,13 @@ class ClawifiSearch(_ClawifiToolBase):
             exclude_domains=exclude_domains,
         )
         try:
-            if self._keyless(is_async=True):
+            if self._keyless():
                 response = await self._get_async_keyless_client().call_tool(
                     KEYLESS_SEARCH_TOOL, search_arguments(query)
                 )
-                return self._keyless_result(response, body)
-            response = await self._get_async_client().search_free(query, **body)
+                return self._keyless_result(response, body, self._requested(max_results))
+            async with self._async_rest() as client:
+                response = await client.search_free(query, **body)
         except ClawifiError as exc:
             raise ToolException(str(exc)) from exc
         return {"results": self._items(response)}
@@ -317,7 +346,7 @@ class ClawifiFetch(_ClawifiToolBase):
         run_manager: CallbackManagerForToolRun | None = None,
     ) -> dict[str, Any]:
         try:
-            if self._keyless(is_async=False):
+            if self._keyless():
                 response = self._get_keyless_client().call_tool(
                     KEYLESS_FETCH_TOOL, fetch_arguments(url, query)
                 )
@@ -334,12 +363,13 @@ class ClawifiFetch(_ClawifiToolBase):
         run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> dict[str, Any]:
         try:
-            if self._keyless(is_async=True):
+            if self._keyless():
                 response = await self._get_async_keyless_client().call_tool(
                     KEYLESS_FETCH_TOOL, fetch_arguments(url, query)
                 )
             else:
-                response = await self._get_async_client().fetch(url, **self._body(query))
+                async with self._async_rest() as client:
+                    response = await client.fetch(url, **self._body(query))
         except ClawifiError as exc:
             raise ToolException(str(exc)) from exc
         return self._format(response)

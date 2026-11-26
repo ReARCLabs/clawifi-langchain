@@ -36,7 +36,8 @@ def test_search_keyless_handshake_and_cap() -> None:
     assert set(out) == {"results", "keyless_note"}
     assert set(out["results"][0]) == {"rank", "title", "url", "snippet"}
     assert "at most 3 results" in out["keyless_note"]
-    assert "Asked for 5 results; capped at 3." in out["keyless_note"]  # tool default is 5
+    # Finding 6: the tool default (5) is not a user request, so no "Asked for" claim.
+    assert "Asked for" not in out["keyless_note"]
 
 
 def test_search_keyless_reports_dropped_filters_and_reuses_session() -> None:
@@ -178,9 +179,9 @@ async def test_async_rate_limit() -> None:
 def test_key_present_uses_rest_not_mcp(monkeypatch: pytest.MonkeyPatch) -> None:
     server = FakeMcpServer()
     tool = ClawifiSearch(api_key="k", **keyless_pair(server))
-    assert tool._keyless(is_async=False) is False
+    assert tool._keyless() is False
     monkeypatch.setenv("CLAWIFI_API_KEY", "env-key")
-    assert ClawifiFetch()._keyless(is_async=True) is False
+    assert ClawifiFetch()._keyless() is False
 
 
 def test_mcp_url_follows_api_base(monkeypatch: pytest.MonkeyPatch) -> None:
